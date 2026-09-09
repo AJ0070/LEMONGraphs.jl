@@ -418,6 +418,236 @@ function _to_cxxint(w::Integer, what::AbstractString)
     return CxxInt(w)
 end
 
+"""
+    dijkstra_shortest_paths(g, srcs, distmx, ::LEMONAlgorithm; kwargs...)
+
+Compute shortest paths with LEMON's `Dijkstra`.
+
+`distmx` must hold non-negative integers that fit in a C++ `int`. The returned
+`Graphs.DijkstraState` is fully populated: `parents`, `dists`, `pathcounts`,
+and, when `allpaths=true`, `predecessors` are computed exactly as by the
+native Graphs.jl implementation, so the result is interchangeable with it.
+
+Multiple sources are supported; they are modelled by an auxiliary zero-cost
+super-source, which means the `O(1)` reuse of a pre-built [`LEMONDiGraph`](@ref)
+only applies to the single-source case.
+"""
+function Graphs.dijkstra_shortest_paths(
+    g::AbstractGraph,
+    srcs::Vector{<:Integer},
+    distmx::AbstractMatrix{T},
+    ::LEMONAlgorithm;
+    allpaths::Bool=false,
+    trackvertices::Bool=false,
+    maxdist=typemax(T),
+) where {T<:Integer}
+    nvg = Int(nv(g))
+    isempty(srcs) && throw(ArgumentError("at least one source vertex is required"))
+    all(s -> 1 <= s <= nvg, srcs) || throw(ArgumentError("source vertex out of range"))
+
+    # Arc endpoints are tracked on the Julia side rather than asked of LEMON one
+    # arc at a time; they are needed again for the pathcount pass below.
+    dg, ns, as, arc_src, arc_dst = if length(srcs) > 1
+        _dijkstra_digraph(g, srcs)          # multi-source: add a super-source
+    elseif g isa LEMONDiGraph
+        (g.graph, g.nodes, g.arcs, g.arc_src, g.arc_dst)   # O(1) reuse
+    else
+        _dijkstra_digraph(g, nothing)
+    end
+    supersource = length(srcs) == 1 ? 0 : nvg + 1
+
+    maparc = Lib.ListDigraphArcMap{CxxInt}(dg)
+    arc_w = Vector{T}(undef, length(as))
+    for i in eachindex(as)
+        u, v = arc_src[i], arc_dst[i]
+        w = (u == supersource) ? zero(T) : distmx[u, v]
+        w >= zero(T) ||
+            throw(ArgumentError("LEMON Dijkstra requires non-negative edge weights, got $w on edge ($u, $v)"))
+        arc_w[i] = w
+        Lib.set(maparc, as[i], _to_cxxint(w, "edge weight"))
+    end
+
+    dijkstra = Lib.DijkstraListDigraphArcMapInt(dg, maparc)
+    Lib.run(dijkstra, ns[supersource == 0 ? Int(srcs[1]) : supersource])
+
+    dists = fill(typemax(T), nvg)
+    parents = zeros(Int, nvg)
+    for i in 1:nvg
+        Lib.reached(dijkstra, ns[i]) || continue
+        d = T(Lib.dist(dijkstra, ns[i]))
+        d <= maxdist || continue
+        dists[i] = d
+        pred = Lib.id(Lib.predNode(dijkstra, ns[i])) + 1
+        parents[i] = (pred == supersource || pred == 0) ? 0 : pred
+    end
+    for s in srcs
+        parents[s] = 0
+    end
+
+    preds, pathcounts = _dijkstra_pathcounts(
+        nvg, srcs, dists, arc_src, arc_dst, arc_w, allpaths
+    )
+
+    closest_vertices = Int[]
+    if trackvertices
+        closest_vertices = collect(1:nvg)
+        # stable sort so that unreachable vertices keep their vertex order at the
+        # end of the list, as `Graphs.dijkstra_shortest_paths` does
+        sort!(closest_vertices; alg=MergeSort, by=v -> (dists[v] == typemax(T), dists[v]))
+    end
+
+    return Graphs.DijkstraState{T,Int}(parents, dists, preds, pathcounts, closest_vertices)
+end
+
+function Graphs.dijkstra_shortest_paths(
+    g::AbstractGraph,
+    src::Integer,
+    distmx::AbstractMatrix{T},
+    alg::LEMONAlgorithm;
+    allpaths::Bool=false,
+    trackvertices::Bool=false,
+    maxdist=typemax(T),
+) where {T<:Integer}
+    return Graphs.dijkstra_shortest_paths(
+        g, [Int(src)], distmx, alg; allpaths, trackvertices, maxdist
+    )
+end
+
+function Graphs.dijkstra_shortest_paths(
+    g::AbstractGraph, srcs::Union{Integer,Vector{<:Integer}}, alg::LEMONAlgorithm; kwargs...
+)
+    return Graphs.dijkstra_shortest_paths(g, srcs, Graphs.weights(g), alg; kwargs...)
+end
+
+function Graphs.dijkstra_shortest_paths(
+    ::AbstractGraph,
+    ::Union{Integer,Vector{<:Integer}},
+    ::AbstractMatrix{T},
+    ::LEMONAlgorithm;
+    kwargs...,
+) where {T<:Real}
+    throw(ArgumentError(
+        "LEMON Dijkstra only supports integer edge weights, got a distance matrix of " *
+        "element type $T. Convert the weights to integers or drop `LEMONAlgorithm()` " *
+        "to use the native Graphs.jl implementation."
+    ))
+end
+
+"""
+    _dijkstra_digraph(g, srcs)
+
+Build the LEMON `ListDigraph` that Dijkstra runs on, returning it together with
+its nodes, its arcs and the arc endpoints. The endpoints are derived from `g`
+on the Julia side, so no per-arc `source`/`target` call crosses into C++.
+
+When `srcs` is a collection rather than `nothing`, an extra node `nv(g) + 1` is
+added with a zero-cost arc into every vertex of `srcs`; that reduces
+multi-source Dijkstra to the single-source case LEMON exposes.
+"""
+function _dijkstra_digraph(g::AbstractGraph, srcs)
+    nvg = Int(nv(g))
+    endpoints = Tuple{Int,Int}[]
+    if srcs !== nothing
+        for s in srcs
+            push!(endpoints, (nvg + 1, Int(s)))
+        end
+    end
+    for e in Graphs.edges(g)
+        u, v = Int(Graphs.src(e)), Int(Graphs.dst(e))
+        push!(endpoints, (u, v))
+        is_directed(g) || push!(endpoints, (v, u))
+    end
+
+    dg = Lib.ListDigraph()
+    ns = [Lib.addNode(dg) for _ in 1:(srcs === nothing ? nvg : nvg + 1)]
+    as = [Lib.addArc(dg, ns[u], ns[v]) for (u, v) in endpoints]
+    return (dg, ns, as, first.(endpoints), last.(endpoints))
+end
+
+"""
+    _dijkstra_pathcounts(nvg, srcs, dists, arc_src, arc_dst, arc_w, allpaths)
+
+Recover the shortest-path DAG from the distance labels produced by LEMON, and
+from it the predecessor lists and the number of shortest paths per vertex.
+
+Zero-weight edges make the "DAG" of tight arcs contain arcs between vertices at
+the same distance, so vertices are relaxed distance group by distance group,
+with a topological (Kahn) pass inside each group. A zero-weight cycle on a
+shortest path means there are infinitely many shortest paths; the affected path
+counts are reported as `Inf`.
+"""
+function _dijkstra_pathcounts(
+    nvg::Int, srcs, dists::Vector{T}, arc_src, arc_dst, arc_w, allpaths::Bool
+) where {T<:Integer}
+    preds = [Int[] for _ in 1:nvg]
+    pathcounts = zeros(Float64, nvg)
+
+    inpreds = [Int[] for _ in 1:nvg]
+    tight_succ = [Int[] for _ in 1:nvg]   # tight arcs between equidistant vertices
+    indeg = zeros(Int, nvg)
+    for i in eachindex(arc_src)
+        u, v = arc_src[i], arc_dst[i]
+        (u > nvg || v > nvg) && continue          # arcs out of the super-source
+        (dists[u] == typemax(T) || dists[v] == typemax(T)) && continue
+        v in srcs && continue
+        dists[u] + arc_w[i] == dists[v] || continue
+        push!(inpreds[v], u)
+        if dists[u] == dists[v]
+            push!(tight_succ[u], v)
+            indeg[v] += 1
+        end
+    end
+    allpaths && (preds = inpreds)
+
+    for s in srcs
+        pathcounts[s] = 1.0
+    end
+
+    order = [v for v in 1:nvg if dists[v] != typemax(T)]
+    sort!(order; by=v -> dists[v])
+
+    group_start = 1
+    while group_start <= length(order)
+        group_stop = group_start
+        while group_stop < length(order) && dists[order[group_stop + 1]] == dists[order[group_start]]
+            group_stop += 1
+        end
+        group = view(order, group_start:group_stop)
+
+        # contributions from strictly closer vertices, already final
+        for v in group
+            v in srcs && continue
+            pathcounts[v] = sum(
+                u -> dists[u] == dists[v] ? 0.0 : pathcounts[u], inpreds[v]; init=0.0
+            )
+        end
+
+        queue = [v for v in group if indeg[v] == 0]
+        settled = 0
+        while !isempty(queue)
+            u = pop!(queue)
+            settled += 1
+            for v in tight_succ[u]
+                pathcounts[v] += pathcounts[u]
+                indeg[v] -= 1
+                indeg[v] == 0 && push!(queue, v)
+            end
+        end
+        # Kahn leaves exactly the vertices lying on, or downstream of, a
+        # zero-weight cycle unsettled; those are reachable by infinitely many
+        # shortest paths. Later groups inherit the `Inf` through the sum above.
+        if settled < length(group)
+            for v in group
+                indeg[v] > 0 && (pathcounts[v] = Inf)
+            end
+        end
+
+        group_start = group_stop + 1
+    end
+
+    return preds, pathcounts
+end
+
 function __init__()
     Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
         LEMONAlgorithm in argtypes || return nothing
