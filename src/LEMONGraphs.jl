@@ -219,4 +219,96 @@ end
 (::Type{L})(n::Integer) where {L<:LEMONGraph} = LEMONGraph(Graph(Int(n)))
 (::Type{L})(n::Integer) where {L<:LEMONDiGraph} = LEMONDiGraph(DiGraph(Int(n)))
 
+"""
+    Graph(g::LEMONGraph) -> Graphs.SimpleGraph
+
+Convert a `LEMONGraph` back to a `Graphs.SimpleGraph`.
+"""
+function Graph(g::LEMONGraph)
+    h = Graph(Graphs.nv(g))
+    for e in Graphs.edges(g)
+        Graphs.add_edge!(h, Graphs.src(e), Graphs.dst(e))
+    end
+    return h
+end
+
+"""
+    DiGraph(g::LEMONDiGraph) -> Graphs.SimpleDiGraph
+
+Convert a `LEMONDiGraph` back to a `Graphs.SimpleDiGraph`.
+"""
+function DiGraph(g::LEMONDiGraph)
+    h = DiGraph(Graphs.nv(g))
+    for e in Graphs.edges(g)
+        Graphs.add_edge!(h, Graphs.src(e), Graphs.dst(e))
+    end
+    return h
+end
+
+Base.convert(::Type{Graph}, g::LEMONGraph) = Graph(g)
+Base.convert(::Type{DiGraph}, g::LEMONDiGraph) = DiGraph(g)
+
+const LEMONAbstractGraph = Union{LEMONGraph,LEMONDiGraph}
+
+# Lazy edge iterator shared by both wrapper types, mirroring `SimpleEdgeIter`
+struct LEMONEdgeIter{G<:LEMONAbstractGraph}
+    graph::G
+end
+
+Base.eltype(::Type{<:LEMONEdgeIter}) = Edge{Int}
+Base.length(it::LEMONEdgeIter) = Graphs.ne(it.graph)
+Base.size(it::LEMONEdgeIter) = (length(it),)
+Base.IteratorSize(::Type{<:LEMONEdgeIter}) = Base.HasLength()
+Base.IteratorEltype(::Type{<:LEMONEdgeIter}) = Base.HasEltype()
+
+_endpoints(g::LEMONGraph, i::Integer) = (g.edge_src[i], g.edge_dst[i])
+_endpoints(g::LEMONDiGraph, i::Integer) = (g.arc_src[i], g.arc_dst[i])
+
+function Base.iterate(it::LEMONEdgeIter, i::Int=1)
+    i > length(it) && return nothing
+    u, v = _endpoints(it.graph, i)
+    return (Edge(u, v), i + 1)
+end
+
+Base.in(e::Edge, it::LEMONEdgeIter) = Graphs.has_edge(it.graph, Graphs.src(e), Graphs.dst(e))
+Base.show(io::IO, it::LEMONEdgeIter) = print(io, "$(length(it))-element LEMONEdgeIter")
+
+# AbstractGraph API for LEMONGraph (undirected)
+Graphs.nv(g::LEMONGraph) = length(g.nodes)
+Graphs.ne(g::LEMONGraph) = length(g.edges)
+Graphs.vertices(g::LEMONGraph) = Base.OneTo(length(g.nodes))
+Graphs.edges(g::LEMONGraph) = LEMONEdgeIter(g)
+Graphs.has_vertex(g::LEMONGraph, v::Integer) = 1 ≤ v ≤ length(g.nodes)
+Graphs.is_directed(::Type{<:LEMONGraph}) = false
+Graphs.is_directed(::LEMONGraph) = false
+Graphs.edgetype(::LEMONGraph) = Edge{Int}
+Graphs.edgetype(::Type{<:LEMONGraph}) = Edge{Int}
+
+function Graphs.has_edge(g::LEMONGraph, u::Integer, v::Integer)
+    (has_vertex(g, u) && has_vertex(g, v)) || return false
+    return insorted(v, g.adjacency[u])
+end
+
+Graphs.inneighbors(g::LEMONGraph, v::Integer) = g.adjacency[v]
+Graphs.outneighbors(g::LEMONGraph, v::Integer) = g.adjacency[v]
+
+# AbstractGraph API for LEMONDiGraph (directed)
+Graphs.nv(g::LEMONDiGraph) = length(g.nodes)
+Graphs.ne(g::LEMONDiGraph) = length(g.arcs)
+Graphs.vertices(g::LEMONDiGraph) = Base.OneTo(length(g.nodes))
+Graphs.edges(g::LEMONDiGraph) = LEMONEdgeIter(g)
+Graphs.has_vertex(g::LEMONDiGraph, v::Integer) = 1 ≤ v ≤ length(g.nodes)
+Graphs.is_directed(::Type{<:LEMONDiGraph}) = true
+Graphs.is_directed(::LEMONDiGraph) = true
+Graphs.edgetype(::LEMONDiGraph) = Edge{Int}
+Graphs.edgetype(::Type{<:LEMONDiGraph}) = Edge{Int}
+
+function Graphs.has_edge(g::LEMONDiGraph, u::Integer, v::Integer)
+    (has_vertex(g, u) && has_vertex(g, v)) || return false
+    return insorted(v, g.fadj[u])
+end
+
+Graphs.inneighbors(g::LEMONDiGraph, v::Integer) = g.badj[v]
+Graphs.outneighbors(g::LEMONDiGraph, v::Integer) = g.fadj[v]
+
 end  # module LEMONGraphs
