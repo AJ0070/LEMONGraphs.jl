@@ -242,6 +242,81 @@ end
     @test length(topological_sort_by_dfs(LEMONDiGraph(path_digraph(5)))) == 5
 end
 
+@testitem "LEMON graphs: growing a wrapper matches the SimpleGraph oracle" begin
+    using LEMONGraphs, Graphs, StableRNGs, Test
+
+    rng = StableRNG(20260729)
+    for _ in 1:40
+        n = rand(rng, 1:8)
+        lg, sg = LEMONGraph(n), SimpleGraph(n)
+        ldg, sdg = LEMONDiGraph(n), SimpleDiGraph(n)
+        for _ in 1:15
+            if rand(rng) < 0.25
+                @test add_vertex!(lg) == add_vertex!(sg)
+                @test add_vertex!(ldg) == add_vertex!(sdg)
+            else
+                u, v = rand(rng, 1:nv(sg)), rand(rng, 1:nv(sg))
+                @test add_edge!(lg, u, v) == add_edge!(sg, u, v)
+                @test add_edge!(ldg, u, v) == add_edge!(sdg, u, v)
+            end
+            @test nv(lg) == nv(sg) && ne(lg) == ne(sg)
+            @test Graph(lg) == sg
+            @test DiGraph(ldg) == sdg
+            @test Set(edges(lg)) == Set(edges(sg))
+            @test Set(edges(ldg)) == Set(edges(sdg))
+            for w in vertices(sg)
+                @test outneighbors(lg, w) == outneighbors(sg, w)
+                @test inneighbors(lg, w) == inneighbors(sg, w)
+                @test outneighbors(ldg, w) == outneighbors(sdg, w)
+                @test inneighbors(ldg, w) == inneighbors(sdg, w)
+            end
+        end
+    end
+
+    # adding an edge that is already there is a no-op, as in Graphs.jl
+    lg = LEMONGraph(path_graph(3))
+    @test !add_edge!(lg, 1, 2)
+    @test !add_edge!(lg, 2, 1)
+    @test !add_edge!(lg, 1, 9)
+    @test ne(lg) == 2
+    @test add_edge!(lg, Edge(1, 3))
+    @test has_edge(lg, 3, 1)
+
+    # LEMON_jll exposes no `erase`, so removal declines rather than lying
+    @test !rem_edge!(lg, 1, 2)
+    @test !rem_edge!(lg, Edge(1, 2))
+    @test !rem_vertex!(lg, 1)
+    @test ne(lg) == 3 && nv(lg) == 3
+end
+
+@testitem "LEMON graphs: copy, zero, reverse and derived subgraphs" begin
+    using LEMONGraphs, Graphs, Test
+
+    g = wheel_graph(6)
+    lg = LEMONGraph(g)
+
+    h = copy(lg)
+    @test add_edge!(h, 2, 4)
+    @test ne(h) == ne(lg) + 1     # the copy is independent of the original
+    @test Graph(lg) == g
+
+    @test nv(zero(lg)) == 0
+    @test typeof(zero(lg)) == typeof(lg)
+    @test typeof(zero(typeof(lg))) == typeof(lg)
+    @test nv(LEMONGraph(4)) == 4 && ne(LEMONGraph(4)) == 0
+    @test nv(LEMONDiGraph(4)) == 4 && ne(LEMONDiGraph(4)) == 0
+
+    dg = path_digraph(4)
+    @test DiGraph(reverse(LEMONDiGraph(dg))) == reverse(dg)
+
+    # generic Graphs.jl algorithms that build a graph of the same type
+    sub, vmap = induced_subgraph(lg, [1, 2, 3])
+    ref, refmap = induced_subgraph(g, [1, 2, 3])
+    @test Graph(sub) == ref
+    @test vmap == refmap
+    @test Graph(egonet(lg, 1, 1)) == egonet(g, 1, 1)
+end
+
 @testitem "LEMON graphs: O(1) reuse of an existing wrapper" begin
     using LEMONGraphs, Graphs
 

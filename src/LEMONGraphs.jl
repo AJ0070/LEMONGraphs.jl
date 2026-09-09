@@ -311,4 +311,71 @@ end
 Graphs.inneighbors(g::LEMONDiGraph, v::Integer) = g.badj[v]
 Graphs.outneighbors(g::LEMONDiGraph, v::Integer) = g.fadj[v]
 
+# --- copying, and the growing half of the mutation API ---------------------
+#
+# LEMON's `ListGraph`/`ListDigraph` can grow, and the Julia-side caches grow
+# with them. Removal would need `ListGraph::erase`, which LEMON_jll does not
+# expose, so `rem_edge!`/`rem_vertex!` decline the request by returning
+# `false`, which is what the Graphs.jl interface expects of a graph type that
+# cannot perform the removal.
+
+Base.copy(g::LEMONGraph) = LEMONGraph(Graph(g))
+Base.copy(g::LEMONDiGraph) = LEMONDiGraph(DiGraph(g))
+
+# `Graphs.zero(g::G) = zero(G)` covers the instance methods
+Base.zero(::Type{<:LEMONGraph}) = LEMONGraph(0)
+Base.zero(::Type{<:LEMONDiGraph}) = LEMONDiGraph(0)
+
+function Graphs.add_vertex!(g::LEMONGraph)
+    push!(g.nodes, Lib.addNode(g.graph))
+    push!(g.adjacency, Int[])
+    return true
+end
+
+function Graphs.add_vertex!(g::LEMONDiGraph)
+    push!(g.nodes, Lib.addNode(g.graph))
+    push!(g.fadj, Int[])
+    push!(g.badj, Int[])
+    return true
+end
+
+function Graphs.add_edge!(g::LEMONGraph, u::Integer, v::Integer)
+    (has_vertex(g, u) && has_vertex(g, v)) || return false
+    has_edge(g, u, v) && return false           # LEMON would add a parallel edge
+    u, v = minmax(Int(u), Int(v))               # `src <= dst`, as in SimpleGraph
+    push!(g.edges, Lib.addEdge(g.graph, g.nodes[u], g.nodes[v]))
+    push!(g.edge_src, u)
+    push!(g.edge_dst, v)
+    insert!(g.adjacency[u], searchsortedfirst(g.adjacency[u], v), v)
+    u == v || insert!(g.adjacency[v], searchsortedfirst(g.adjacency[v], u), u)
+    return true
+end
+
+function Graphs.add_edge!(g::LEMONDiGraph, u::Integer, v::Integer)
+    (has_vertex(g, u) && has_vertex(g, v)) || return false
+    has_edge(g, u, v) && return false
+    u, v = Int(u), Int(v)
+    push!(g.arcs, Lib.addArc(g.graph, g.nodes[u], g.nodes[v]))
+    push!(g.arc_src, u)
+    push!(g.arc_dst, v)
+    insert!(g.fadj[u], searchsortedfirst(g.fadj[u], v), v)
+    insert!(g.badj[v], searchsortedfirst(g.badj[v], u), u)
+    return true
+end
+
+Graphs.add_edge!(g::LEMONAbstractGraph, e::Edge) = Graphs.add_edge!(g, src(e), dst(e))
+
+Graphs.rem_edge!(::LEMONAbstractGraph, ::Integer, ::Integer) = false
+Graphs.rem_edge!(::LEMONAbstractGraph, ::Edge) = false
+Graphs.rem_vertex!(::LEMONAbstractGraph, ::Integer) = false
+
+"""
+    reverse(g::LEMONDiGraph) -> LEMONDiGraph
+
+Return the graph with every arc reversed. `Graphs.reverse` itself is only
+defined for `AbstractSimpleGraph`, so this method exists to keep the wrapper
+usable where the simple graphs are.
+"""
+Graphs.reverse(g::LEMONDiGraph) = LEMONDiGraph(Graphs.reverse(DiGraph(g)))
+
 end  # module LEMONGraphs
