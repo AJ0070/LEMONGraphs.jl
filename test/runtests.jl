@@ -11,7 +11,7 @@ if Sys.islinux() && Sys.ARCH == :x86_64 && get(ENV,"JET_TEST","")!="true"
 end
 
 if get(ENV,"JET_TEST","")=="true"
-    Pkg.add(name="JET", version="0.12")
+    Pkg.add("JET")
 end
 
 

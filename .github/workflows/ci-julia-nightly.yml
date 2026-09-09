@@ -29,7 +29,7 @@ jobs:
             jet: 'false'
           - os: ubuntu-latest
             arch: x64
-            version: '1.12'
+            version: '1'
             threads: 2
             jet: 'true'
     steps:
