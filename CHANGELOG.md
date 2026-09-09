@@ -1,8 +1,8 @@
 # News
 
-## Unreleased
+## v0.1.2 - 2026-09-09
 
-- Fix maximum-weight perfect matching with the parametric map types in LEMON_jll 1.3.6 or later.
+- Fix maximum-weight perfect matching broken by a change to the parametric map types in LEMON_jll 1.3.6.
 
 ## v0.1.1 - 2025-10-10
 
