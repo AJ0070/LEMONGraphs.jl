@@ -30,7 +30,7 @@ Lib.ListGraph(sourcegraph::Graph) = toListGraph(sourcegraph)[1]
 
 function maxweightedperfectmatching(graph::Graph, weights::AbstractVector{<:Integer})
     g,ns,es = toListGraph(graph)
-    mapedge = Lib.ListGraphEdgeMapInt(g)
+    mapedge = Lib.ListGraphEdgeMap{Cint}(g)
     for (e,w) in zip(es,weights)
         Lib.set(mapedge, e, w)
     end
