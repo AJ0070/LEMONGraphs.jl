@@ -378,4 +378,58 @@ usable where the simple graphs are.
 """
 Graphs.reverse(g::LEMONDiGraph) = LEMONDiGraph(Graphs.reverse(DiGraph(g)))
 
+# LEMON-specific algorithm dispatches
+"""
+    maxweightedperfectmatching(g, weights[, ::LEMONAlgorithm])
+
+Compute a maximum-weight perfect matching using LEMON's `MaxWeightedPerfectMatching`.
+
+`weights` is either a vector of integer weights ordered like `edges(g)`, or a
+`Dict{Edge,<:Integer}`. Returns `(matching_weight, mates)` where `mates[v]` is
+the vertex matched to `v`.
+"""
+function maxweightedperfectmatching(g::AbstractGraph, weights::AbstractVector{<:Integer}, alg::LEMONAlgorithm)
+    lg, ns, es = to_list_graph(g)
+    length(weights) == length(es) || throw(DimensionMismatch("expected $(length(es)) edge weights, got $(length(weights))"))
+    mapedge = Lib.ListGraphEdgeMap{CxxInt}(lg)
+    for (e, w) in zip(es, weights)
+        Lib.set(mapedge, e, _to_cxxint(w, "matching weight"))
+    end
+    mwpm = Lib.MaxWeightedPerfectMatchingListGraphInt(lg, mapedge)
+    Lib.run(mwpm)
+    return Lib.matchingWeight(mwpm), [Lib.id(Lib.mate(mwpm, n)) + 1 for n in ns]
+end
+
+function maxweightedperfectmatching(g::AbstractGraph, weights::Dict{E,T}, alg::LEMONAlgorithm) where {E<:Edge,T<:Integer}
+    return maxweightedperfectmatching(g, [weights[e] for e in Graphs.edges(g)], alg)
+end
+
+function maxweightedperfectmatching(g::AbstractGraph, weights::AbstractVector{<:Integer})
+    return maxweightedperfectmatching(g, weights, LEMONAlgorithm())
+end
+
+function maxweightedperfectmatching(g::AbstractGraph, weights::Dict{E,T}) where {E<:Edge,T<:Integer}
+    return maxweightedperfectmatching(g, weights, LEMONAlgorithm())
+end
+
+function _to_cxxint(w::Integer, what::AbstractString)
+    typemin(CxxInt) <= w <= typemax(CxxInt) ||
+        throw(ArgumentError("LEMON stores each $what in a C++ `int`; $w does not fit in $(CxxInt)"))
+    return CxxInt(w)
+end
+
+function __init__()
+    Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
+        LEMONAlgorithm in argtypes || return nothing
+        print(
+            io,
+            "\n\n`LEMONGraphs` does not provide a LEMON-backed method for `$(exc.f)` with " *
+            "these argument types. LEMON algorithms are integer-valued: make sure weights, " *
+            "costs and capacities are `Integer`s. See the LEMONGraphs.jl documentation for " *
+            "the list of supported `LEMONAlgorithm()` dispatches.",
+        )
+        return nothing
+    end
+end
+
 end  # module LEMONGraphs
